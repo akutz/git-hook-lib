@@ -208,7 +208,7 @@ def git_ghl_dir(path, base_name, ext='')
     debug("ghl_dir_parent=%s", ghl_dir_parent)
 
     if File.exists?(ghl_dir_parent) && File.directory?(ghl_dir_parent) then
-        ghl_dir = "#{ghl_dir_parent}/ghl"
+        ghl_dir = "#{ghl_dir_parent}/ghl-lib"
         if File.exists?(ghl_dir) && File.directory?(ghl_dir) then
             return ghl_dir
         end
@@ -223,7 +223,7 @@ def git_ghl_dir(path, base_name, ext='')
             debug("cloning ghl into %s", clone_dir)
             ghl_exec("git clone \"#{ghl_dir_parent}\" \"#{clone_dir}\"")
         end
-        ghl_dir = "#{clone_dir}/ghl"
+        ghl_dir = "#{clone_dir}/ghl-lib"
         if File.exists?(ghl_dir) && File.directory?(ghl_dir) then
             return ghl_dir
         end
@@ -295,12 +295,13 @@ def find_ghl_dir()
     if ghl_dir != nil then return ghl_dir end
 
     # The last possible ghl dir.
-    ghl_dir = "%s/hooks/ghl" % [git_dir]
+    ghl_dir = "%s/hooks/ghl-lib" % [git_dir]
     if File.exists?(ghl_dir) && File.directory?(ghl_dir) then
         return ghl_dir
     end
 
-    raise "error locating git-lib-dir for git dir '#{git_dir}'"
+    debug("unabled to locate git-lib-dir for git dir %s", git_dir)
+    return nil
 end
 
 ##
@@ -349,6 +350,11 @@ info("REPO_PATH-%s", REPO_PATH)
 
 # Execute any file-defined hooks first
 if RUBY_HOOKS then exec_ruby_hook end
+
+if GHL_DIR == nil then
+    debug("git-hook-lib is not available")
+    exit 0
+end
 
 # Load the ghl libraries
 Dir.glob("#{GHL_DIR}/*.rb") do |lib|
