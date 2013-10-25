@@ -6,27 +6,6 @@ module GitHookLib
         return args
     end
 
-    def matches?(str, rx)
-        if str == nil && rx == nil then
-            debug "'' matches ''"
-            return true
-        end
-
-        if str == nil then
-            debug "!matches '#{rx.source}' bc/ str=nil"
-            return false
-        end
-
-        m = rx.match(str)
-        if m == nil then
-            debug "'#{str}' !matches #{rx.source}'"
-            return false
-        end
-
-        debug "'#{str}' matches #{rx.source}"
-        return true
-    end
-
     ##
     # Contains methods to assist in parsing and verifying commit messages.
     ##
