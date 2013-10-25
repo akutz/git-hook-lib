@@ -1,0 +1,6 @@
+.DS_Store
+commit-msg
+pre-commit
+update
+pre-receive
+post-receive
