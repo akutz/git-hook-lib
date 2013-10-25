@@ -1,0 +1,373 @@
+#!/usr/bin/ruby
+
+################################################################################
+## git-hook-lib - a framework provides useful git-hook functionality          ##
+##                                                                            ##
+##     url: https://github.com/akutz/ghl                                      ##
+##  author: akutz                                                             ##
+################################################################################
+
+require 'logger'
+require 'tmpdir'
+require 'digest/md5'
+
+################################################################################
+##                                 CONSTANTS                                  ##
+################################################################################
+
+# Set the log level.
+LOG_LEVEL=Logger::ERROR
+
+# A flag that forces the script to exit with a non-zero exit code.
+ABORT=false
+
+# A flag that indicates whether this script is being executed directly as hook
+# by virtue of linking the actual hooks to this script on the file system. For
+# example, in Linux or OS X there would be a symlink from the 'pre-receive' 
+# script on a git server to this script so that when the current name of this
+# file is returned from __FILE__, the value 'pre-receive' would be returned.
+#
+# Otherwise this script expects to be executed on behalf of the actual hook,
+# with the first argument to the script being the name of the hook that is 
+# being executed.
+RUN_AS_HOOK=true
+
+# The type of hook to process. Valid values are 'server' and 'client'.
+HOOK_TYPE="client"
+
+# A flag that tells this script to look ruby scripts in the current directory
+# that have the same name as the currently executing hook, and if such a script
+# exists to execute it before executing the git-hook-lib hooks.
+RUBY_HOOKS=true
+
+# The path to the ruby executable to use when executing any of the above ruby
+# hooks. The default value is the path to the ruby executable that is hosting
+# the current process.
+RUBY=File.join(RbConfig::CONFIG['bindir'], 
+               RbConfig::CONFIG['ruby_install_name']).sub(/.*\s.*/m, '"\&"')
+
+################################################################################
+##                             GitHookLib (Lite)                              ##
+################################################################################
+module GitHookLib
+
+    ##
+    # A class to assist with reflection.
+    ##
+    class Reflection
+
+        # A pattern for matching data returned from the kernel's caller info.
+        @@CALLER_PATT = /^.*[\/\\](.*):(\d+):in `(.*?)'$/
+
+        # A pattern for getting the real method name if there is a lambda.
+        @@LAMBDA_PATT = /^.*\sin\s(.*)$/
+
+        # A pattern that matches caller information defined in this file.
+        @@GHL_MEMBER = /Object|Class/
+
+        ##
+        # Returns a tuple with information about the state of the stack that  
+        # invoked this method in the form of class name, method name, line 
+        # number.
+        #
+        # stack The stack offset.
+        ##
+        def self.get_callee_info(offset=0)
+            callee_info_match = @@CALLER_PATT.match(caller[offset])
+            file_name = callee_info_match[1]
+            line_number = callee_info_match[2]
+            method_name = callee_info_match[3]
+            method_name_m = @@LAMBDA_PATT.match(method_name)
+            if method_name_m then method_name = method_name_m[1] end
+
+            class_name = self.class.name
+            if class_name =~ @@GHL_MEMBER then class_name = file_name end
+            return class_name, method_name, line_number
+        end
+    end
+
+    ##
+    # A class to assist with logging.
+    ## 
+    class Logging
+
+        # The module's logger.
+        @@logger = Logger.new(STDOUT)
+
+        ##
+        # Logs a message.
+        ##
+        def self.log(sev, args)
+
+            callee_info_arr = Reflection.get_callee_info(1)
+            if callee_info_arr[1] =~ /debug|info|warn|error|fatal/i then
+                callee_info_arr = Reflection.get_callee_info(2)
+            end
+            callee_info = "%s::%s::%s" % callee_info_arr
+            
+            time = Time.new.strftime("%Y-%m-%d %H:%M:%S:%3N")
+
+            msg_info = nil
+            if args != nil && args.length > 0 then
+                msg_info = args.length == 1 ? 
+                    args[0] : args[0] % args[1..args.length-1]    
+            end
+
+            sev_name = nil
+            case sev
+            when 0
+                sev_name = 'DEBUG'
+            when 1
+                sev_name = 'INFO'
+            when 2 
+                sev_name = 'WARN'
+            when 3 
+                sev_name = 'ERROR'
+            when 4
+                sev_name = 'FATAL'
+            end
+
+            msg = nil
+            if msg_info == nil then
+                msg = "#{time} [#{sev_name}] #{callee_info}\n"
+            else
+                msg = "#{time} [#{sev_name}] #{callee_info} - #{msg_info}\n"
+            end
+
+            if sev >= LOG_LEVEL then @@logger << msg end
+        end
+    end
+
+    def debug(*args)
+        Logging.log(Logger::DEBUG, args)
+    end
+
+    def info(*args)
+        Logging.log(Logger::INFO, args)
+    end
+    
+    def warn(*args)
+        Logging.log(Logger::WARN, args)
+    end
+    
+    def error(*args)
+        Logging.log(Logger::ERROR, args)
+    end
+    
+    def fatal(*args)
+        Logging.log(Logger::FATAL, args)
+    end
+
+    def trim(str)
+        return str == nil ? nil : str.strip
+    end
+
+    def matches?(str, rx)
+        if str == nil && rx == nil then
+            Logging.debug("nil matches nil")
+            return true
+        end
+
+        if str == nil then
+            Logging.debug("nil !matches '%s'", rx.source)
+            return false
+        end
+
+        m = rx.match(str)
+        if m == nil then
+            Logging.debug("'%s' !matches '%s'", str, rx.source)
+            return false
+        end
+
+        Logging.debug("'%s' matches '%s'", str, rx.source)
+        return true
+    end
+
+    def ghl_exec(cmd, raise_on_err=true)
+        debug(cmd)
+        stdout = `#{cmd}`
+        err_code = $?.exitstatus
+        if err_code != 0 && raise_on_err then
+            raise "errcode=#{err_code} xing #{cmd}"
+        end
+        return err_code, trim(stdout)
+    end
+end
+
+################################################################################
+##                                  functions                                 ##
+################################################################################
+
+##
+# Uses git, if necessary, to get the git-hook-lib directory by cloning it from
+# the local, associated ghl git dir.
+##
+def git_ghl_dir(path, base_name, ext='')
+    
+    ghl_dir_parent = "%s/%s-hooks%s" % [path, base_name, ext]
+    debug("ghl_dir_parent=%s", ghl_dir_parent)
+
+    if File.exists?(ghl_dir_parent) && File.directory?(ghl_dir_parent) then
+        ghl_dir = "#{ghl_dir_parent}/ghl"
+        if File.exists?(ghl_dir) && File.directory?(ghl_dir) then
+            return ghl_dir
+        end
+        hash = Digest::MD5.hexdigest(File.basename(ghl_dir_parent))
+        clone_dir = "%s/%s" % [Dir.tmpdir, hash]
+        if File.exists?(clone_dir) && File.directory?(clone_dir) then
+            debug("merging ghl updates into %s", clone_dir)
+            ghl_exec("git "\
+                     "--git-dir=\"#{clone_dir}/.git\" "\
+                     "--work-tree=\"#{clone_dir}\" pull")
+        else
+            debug("cloning ghl into %s", clone_dir)
+            ghl_exec("git clone \"#{ghl_dir_parent}\" \"#{clone_dir}\"")
+        end
+        ghl_dir = "#{clone_dir}/ghl"
+        if File.exists?(ghl_dir) && File.directory?(ghl_dir) then
+            return ghl_dir
+        end
+    end
+    return nil
+end
+
+##
+# Gets the name of the executing hook.
+##
+def get_hook_name()
+    return File.basename(RUN_AS_HOOK ? __FILE__ : ARGV[0])
+end
+
+##
+# Returns the current git directory, its base name sans any .git extension it
+# may have (this will still return '.git' for git directories that are simply
+# '.git').
+##
+def get_git_dir_info()
+    git_dir = ghl_exec("git rev-parse --git-dir")[1]
+    git_dir = File.expand_path(git_dir)
+    base_name = File.basename(git_dir, '.git')
+    return git_dir, base_name
+end
+
+##
+# Gets the repoistory path and sets an environment variable with that value.
+##
+def init_repo_path
+    git_dir = get_git_dir_info()[0]
+    repo_path = HOOK_TYPE == "client" ? 
+                File.expand_path("../..", git_dir) :
+                File.expand_path("..", git_dir)
+    ENV["REPO_PATH"] = REPO_PATH
+    return repo_path
+end
+
+
+##
+# Get the git-hook-lib (ghl) directory.
+#
+# The git-hook-lib (ghl) directory to use is determined by whether or not 
+# there is a directory that is a sibling of this git directory or this git 
+# dir's working tree directory that shares the same name as either of the 
+# aforementioned directory names with the addition of a suffix "-hooks". The 
+# suffix would occcur before the '.git' extension that is commonly appended 
+# to hosted and bare git repositories. For example, the associated hooks 
+# directory for "repo.git" would be "repo-hooks.git".
+## 
+def find_ghl_dir()
+
+    # Get the git dir for which this hook is executing.
+    git_dir, git_dir_base_name = get_git_dir_info
+
+    # Get the full path to the git dir's parent directory.
+    git_dir_parent = File.expand_path('..', git_dir)
+    git_dir_parent_base_name = File.basename(git_dir_parent, '.git')
+
+    # A parent of a possible ghl dir.
+    ghl_dir = git_ghl_dir(git_dir_parent, git_dir_base_name, '.git')
+    if ghl_dir != nil then return ghl_dir end
+
+    # Get the full path to the git dir's grand-parent directory.
+    git_dir_grand_parent = File.expand_path('..', git_dir_parent)
+
+    # Another parent of a possible ghl dir.
+    ghl_dir = git_ghl_dir(git_dir_grand_parent, git_dir_parent_base_name)
+    if ghl_dir != nil then return ghl_dir end
+
+    # The last possible ghl dir.
+    ghl_dir = "%s/hooks/ghl" % [git_dir]
+    if File.exists?(ghl_dir) && File.directory?(ghl_dir) then
+        return ghl_dir
+    end
+
+    raise "error locating git-lib-dir for git dir '#{git_dir}'"
+end
+
+##
+# Runs a ruby hook defined on the filesystem.
+##
+def exec_ruby_hook()
+    info("RUBY=%s", RUBY)
+    ruby_hook = "%s/%s.rb" % [File.expand_path(File.dirname(__FILE__)), 
+                              File.basename(__FILE__)]
+    debug("ruby_hook=%s", ruby_hook)
+    if File.exists?(ruby_hook) then
+        rargs = ARGV == nil || ARGV.length == 0 ? nil : " " << ARGV.join(" ")
+        rcmd = "#{ruby_hook}#{rargs}"
+        err_code = ghl_exec("#{RUBY} #{rcmd}", false)[0]
+        if err_code != 0 then abort end
+    end
+end
+
+
+################################################################################
+##                                 STATICS                                    ##
+################################################################################
+
+# We include this again later after the other libraries are loaded, but we 
+# include it here to make use of the module's instance utility methods.
+include GitHookLib
+
+# Get the git-hook-lib dir. Please the comments on the find_ghl_dir method for
+# more information about what the git-hook-lib dir is.
+GHL_DIR     =   find_ghl_dir
+
+# Get the name of the executing hook.
+HOOK_NAME   =   get_hook_name
+
+# Get the path to the repository.
+REPO_PATH   =   init_repo_path
+
+info("GHL_DIR=%s", GHL_DIR)
+info("HOOK_TYPE=%s", HOOK_TYPE)
+info("HOOK_NAME=%s", HOOK_NAME)
+info("REPO_PATH-%s", REPO_PATH)
+
+################################################################################
+##                                 main(*args)                                ##
+################################################################################
+
+# Execute any file-defined hooks first
+if RUBY_HOOKS then exec_ruby_hook end
+
+# Load the ghl libraries
+Dir.glob("#{GHL_DIR}/*.rb") do |lib|
+    debug("loading ghl lib '%s'", lib)
+    require lib
+end
+
+# Include the git-hook-lib namespace
+include GitHookLib
+
+# Create a new hook service.
+hook_service = HookService.instance(GHL_DIR, GitRepo.new, HOOK_TYPE)
+
+# Get the hook's arguments.
+hook_args = RUN_AS_HOOK ? ARGV : ARGV[1..ARGV.length]
+info("hook_args=%s", hook_args)
+
+# Exceute the hook.
+hook_service.exec_hook(HOOK_NAME, hook_args)
+
+# Possible force an abort.
+if ABORT then fatal('abort signal'); abort end

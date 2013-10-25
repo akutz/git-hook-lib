@@ -1,0 +1,48 @@
+################################################################################
+## git-hooks-acls
+##
+##   This file contains a series of access control entries (ACE) that combine 
+##   to build an access control list (ACL) which in turn controls access to a
+##   git repository.
+##
+##   Lines beginning with a '#' or blank lines are ignored.
+##
+##   The format for an ACE is as follows:
+##
+##     branch_patt[,user_patt][,path_patt]
+##
+##   The user_patt and path_patt components are optional. Omitting them implies
+##   that all users and all paths are writeable for the branches that match the
+##   given branch pattern.
+##
+##     branch_patt   The branch pattern is a regular expression that will be
+##                   used to match a git branch. Like the other two regexes,
+##                   it's not necessary to anchor the pattern to the beginning
+##                   and end of the line with ^ and $ -- that's taken care of 
+##                   internally.
+##
+##                   The following are valid branch patterns:
+##
+##                     master
+##                     master|develop
+##                     (feature|bugfix|support)/.*
+##
+##    user_patt      The user pattern is a regex that will be used to match the
+##                   user name of the author performing the git operation.
+##
+##    path_patt      The path patern is a regex that will be used to match the
+##                   files included in a git operation's changeset. If no files
+##                   are specified by the path pattern then it is assumed all
+##                   files are allowed. However, if a path pattern is specified
+##                   then it is required to explicitly state which paths are
+##                   allowed. Any paths that are not matched by the given path
+##                   pattern will be denied.
+##
+################################################################################
+
+# Anyone can read and write to feature, bugfix, and support branches.
+(feature|bugfix|support|attic)/.*
+
+# Only Andrew, Josh, and Bryan have write permissions to the master, develop
+# release, and hotfix branches.
+master|develop|((release|hotfix)/.*),akutz|kutzs|huttj|neumab
