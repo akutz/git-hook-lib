@@ -210,6 +210,7 @@ def git_ghl_dir(path, base_name, ext='')
     if File.exists?(ghl_dir_parent) && File.directory?(ghl_dir_parent) then
         ghl_dir = "#{ghl_dir_parent}/ghl-lib"
         if File.exists?(ghl_dir) && File.directory?(ghl_dir) then
+            debug("getting ghl-dir='%s' from non-bare repo", ghl_dir)
             return ghl_dir
         end
         hash = Digest::MD5.hexdigest(File.basename(ghl_dir_parent))
@@ -258,7 +259,7 @@ def init_repo_path
     repo_path = HOOK_TYPE == "client" ? 
                 File.expand_path("../..", git_dir) :
                 File.expand_path("..", git_dir)
-    ENV["REPO_PATH"] = REPO_PATH
+    ENV["REPO_PATH"] = repo_path
     return repo_path
 end
 
