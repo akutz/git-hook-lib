@@ -1,7 +1,7 @@
 #!/usr/bin/ruby
 
 ################################################################################
-## git-hook-lib - a framework provides useful git-hook functionality          ##
+## git-hook-lib - a framework that provides useful git-hook functionality     ##
 ##                                                                            ##
 ##     url: https://github.com/akutz/ghl                                      ##
 ##  author: akutz                                                             ##
