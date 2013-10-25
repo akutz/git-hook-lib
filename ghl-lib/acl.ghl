@@ -43,6 +43,6 @@
 # Anyone can read and write to feature, bugfix, and support branches.
 (feature|bugfix|support|attic)/.*
 
-# Only Andrew, Josh, and Bryan have write permissions to the master, develop
-# release, and hotfix branches.
-master|develop|((release|hotfix)/.*),akutz|kutzs|huttj|neumab
+# Only user 'akutz' is allowed to commit to the master, develop, release, and
+# hotfix branches.
+master|develop|((release|hotfix)/.*),akutz
